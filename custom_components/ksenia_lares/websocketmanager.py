@@ -161,38 +161,35 @@ class WebSocketManager:
 
     :raises Exception: if the connection is closed or an error occurs
     """
+    import websockets.exceptions
+
     async def listener(self):
-        self._logger.info("Starting listener")
         while self._running:
-            message = None
-            async with self._ws_lock:
-                try:
-                    message = await asyncio.wait_for(self._ws.recv(), timeout=3)
-                except asyncio.TimeoutError:
-                    continue
-                except websockets.exceptions.ConnectionClosed:
-                    self._logger.error("WebSocket closed. Trying reconnection")
-                    self._running = False
-                    if self._retries < self._max_retries:
-                        if self._connSecure:
-                            await self.connectSecure()
-                        else:
-                            await self.connect()
-                    else:
-                        self._logger.error("WebSocket closed. Maximum retries reached")
-                    continue
-                except Exception as e:
-                    self._logger.error(f"Listener error: {e}")
-                    continue
+            try:
+                message = await self._ws.recv()
+                await self.handle_message(message)  # supponiamo esista
+            except (websockets.exceptions.ConnectionClosed, websockets.exceptions.WebSocketException) as e:
+                self._logger.warning(f"WebSocket closed: {e}. Trying reconnection...")
+                self._running = False
+                await self.reconnect_with_backoff()
+            except Exception as e:
+                self._logger.error(f"Unexpected error in listener: {e}")
 
-            if message:
-                try:
-                    data = json.loads(message)
-                except Exception as e:
-                    self._logger.error(f"Error decoding JSON: {e}")
-                    continue
-                await self.handle_message(data)
+    async def reconnect_with_backoff(self):
+        delay = 5  # primo ritardo
+        max_delay = 300  # 5 minuti massimo
 
+        while not self._running:
+            try:
+                self._logger.info(f"Attempting reconnection in {delay} seconds...")
+                await asyncio.sleep(delay)
+                await self.connect()
+                if self._running:
+                    self._logger.info("Reconnected successfully.")
+                    break
+            except Exception as e:
+                self._logger.error(f"Reconnection failed: {e}")
+                delay = min(delay * 2, max_delay)  # aumento esponenziale
 
     """
     Handles messages received from the Ksenia Lares WebSocket server.
